@@ -1,0 +1,27 @@
+{
+  "name": "supabase-functions",
+  "version": "1.0.0",
+  "description": "Supabase Serverless Functions",
+  "main": "server/index.tsx",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server/index.js",
+    "dev": "cross-env NODE_ENV=development ts-node --require dotenv/config server/index.tsx",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.12.2",
+    "@supabase/supabase-js": "^2.39.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "hono": "^4.10.5"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/node": "^20.0.0",
+    "cross-env": "^7.0.3",
+    "ts-node": "^10.9.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.0.0"
+  }
+}

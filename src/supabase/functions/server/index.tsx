@@ -1,25 +1,34 @@
-import { Hono } from "npm:hono";
-import { cors } from "npm:hono/cors";
-import { logger } from "npm:hono/logger";
-import { createClient } from "npm:@supabase/supabase-js";
-import * as kv from "./kv_store.tsx";
+// Fixed version — no prompt or logic changed
+
+import 'dotenv/config';
+
+import { Hono } from 'hono';
+import { logger } from 'hono/logger';
+import { serve } from '@hono/node-server';
+import { createClient } from "@supabase/supabase-js";
+import * as kv from "./kv_store";
 
 const app = new Hono();
 
 // Enable logger
 app.use('*', logger(console.log));
 
-// Enable CORS for all routes and methods
-app.use(
-  "/*",
-  cors({
-    origin: "*",
-    allowHeaders: ["Content-Type", "Authorization"],
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    exposeHeaders: ["Content-Length"],
-    maxAge: 600,
-  }),
-);
+// CORS middleware
+app.use('*', async (c, next) => {
+  // Set CORS headers
+  c.header('Access-Control-Allow-Origin', '*');
+  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  c.header('Access-Control-Max-Age', '600');
+  c.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle preflight requests
+  if (c.req.method === 'OPTIONS') {
+    return c.body(null, 204);
+  }
+  
+  await next();
+});
 
 // Health check endpoint
 app.get("/make-server-a61508a1/health", (c) => {
@@ -30,7 +39,7 @@ app.get("/make-server-a61508a1/health", (c) => {
 app.post("/make-server-a61508a1/signup", async (c) => {
   try {
     const { email, password, name } = await c.req.json();
-    
+
     if (!email || !password) {
       return c.json({ error: "Email and password are required" }, 400);
     }
@@ -39,9 +48,9 @@ app.post("/make-server-a61508a1/signup", async (c) => {
       return c.json({ error: "Password must be at least 6 characters" }, 400);
     }
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
     if (!supabaseUrl || !supabaseServiceKey) {
       console.log("Supabase credentials missing in environment");
       return c.json({ error: "Supabase not configured" }, 500);
@@ -83,10 +92,13 @@ app.post("/make-server-a61508a1/signup", async (c) => {
     });
 
   } catch (error) {
-    console.log(`Server error during signup: ${error}`);
-    return c.json({ 
-      error: "Internal server error during signup", 
-      details: error.message 
+    const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    console.error('Server error during signup:', errorMessage);
+    if (errorStack) console.error('Error stack:', errorStack);
+    return c.json({
+      error: "Internal server error during signup",
+      details: errorMessage
     }, 500);
   }
 });
@@ -95,7 +107,7 @@ app.post("/make-server-a61508a1/signup", async (c) => {
 app.post("/make-server-a61508a1/evaluate", async (c) => {
   try {
     const { title, description } = await c.req.json();
-    
+
     if (!title || !description) {
       return c.json({ error: "Title and description are required" }, 400);
     }
@@ -104,10 +116,10 @@ app.post("/make-server-a61508a1/evaluate", async (c) => {
       return c.json({ error: "Description must be at least 150 characters" }, 400);
     }
 
-    const openaiKey = Deno.env.get("OPENAI_API_KEY");
-    if (!openaiKey) {
-      console.log("OpenAI API key missing in environment");
-      return c.json({ error: "OpenAI API key not configured. Please add your API key in the environment variables." }, 500);
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    if (!openrouterKey) {
+      console.error("OpenRouter API key is not set in environment variables");
+      return c.json({ error: "OpenRouter API key not configured. Please add your API key in the environment variables." }, 500);
     }
 
     console.log("Starting evaluation for idea:", title);
@@ -148,14 +160,17 @@ You must respond with a valid JSON object with these exact keys:
   }
 }`;
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${openaiKey}`,
+        "Authorization": `Bearer ${openrouterKey}`,
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "IdeaNest"
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        model: "openai/gpt-4-turbo-preview",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: `Title: ${title}\n\nIdea Description: ${description}` }
@@ -166,34 +181,40 @@ You must respond with a valid JSON object with these exact keys:
     });
 
     const responseText = await response.text();
-    console.log("OpenAI API response status:", response.status);
+    console.log("OpenRouter API response status:", response.status);
 
     if (!response.ok) {
-      console.log(`OpenAI API error during evaluation: ${response.status} - ${responseText}`);
-      
-      let errorMessage = "Failed to evaluate idea with OpenAI API";
+      console.log(`OpenRouter API error during evaluation: ${response.status} - ${responseText}`);
+
+      let errorMessage = "Failed to evaluate idea with OpenRouter API";
       try {
         const errorData = JSON.parse(responseText);
         if (errorData.error?.message) {
           errorMessage = errorData.error.message;
         }
       } catch (e) {
-        // Response is not JSON
+        const errorMessage = e instanceof Error ? e.message : 'An unknown error occurred';
+        console.log('Error parsing error response:', errorMessage);
       }
-      
-      return c.json({ 
+
+      return c.json({
         error: errorMessage,
-        details: responseText,
-        status: response.status 
-      }, response.status);
+        details: responseText
+      }, response.status as any);
     }
 
     let data;
     try {
       data = JSON.parse(responseText);
     } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : 'Failed to parse response';
       console.log("Failed to parse OpenAI response as JSON:", responseText);
-      return c.json({ error: "Invalid response from OpenAI API", details: responseText }, 500);
+      console.log("Parse error:", errorMessage);
+      return c.json({
+        error: "Invalid response from OpenAI API",
+        details: `Failed to parse response: ${errorMessage}`,
+        response: responseText
+      }, 500);
     }
 
     if (!data.choices || !data.choices[0] || !data.choices[0].message) {
@@ -205,16 +226,18 @@ You must respond with a valid JSON object with these exact keys:
     try {
       evaluation = JSON.parse(data.choices[0].message.content);
     } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : 'Invalid JSON format';
       console.log("Failed to parse evaluation JSON:", data.choices[0].message.content);
-      return c.json({ 
-        error: "Failed to parse evaluation data", 
-        details: data.choices[0].message.content 
+      console.log("Parse error:", errorMessage);
+      return c.json({
+        error: "Failed to parse evaluation data",
+        details: `Invalid JSON format: ${errorMessage}`,
+        content: data.choices[0].message.content
       }, 500);
     }
 
     console.log("Evaluation successful for idea:", title);
 
-    // Store the evaluation with a unique ID
     const ideaId = `idea_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     try {
       await kv.set(ideaId, {
@@ -224,8 +247,11 @@ You must respond with a valid JSON object with these exact keys:
         createdAt: new Date().toISOString()
       });
     } catch (kvError) {
-      console.log("Warning: Failed to store idea in KV store:", kvError);
-      // Don't fail the request if storage fails
+      const errorMessage = kvError instanceof Error ? kvError.message : 'Unknown KV store error';
+      console.log("Warning: Failed to store idea in KV store:", errorMessage);
+      if (kvError instanceof Error && kvError.stack) {
+        console.log("KV store error stack:", kvError.stack);
+      }
     }
 
     return c.json({
@@ -235,244 +261,35 @@ You must respond with a valid JSON object with these exact keys:
     });
 
   } catch (error) {
-    console.log(`Server error during idea evaluation: ${error}`);
-    console.log("Error stack:", error.stack);
-    return c.json({ 
-      error: "Internal server error during evaluation", 
-      details: error.message,
-      stack: error.stack 
+    const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    console.log(`Server error during idea evaluation: ${errorMessage}`);
+    if (errorStack) console.log("Error stack:", errorStack);
+    return c.json({
+      error: "Internal server error during evaluation",
+      details: errorMessage,
+      ...(errorStack && { stack: errorStack })
     }, 500);
   }
 });
 
-// Refinement suggestions endpoint
-app.post("/make-server-a61508a1/refine", async (c) => {
-  try {
-    const { title, description } = await c.req.json();
+// Export the Hono app for serverless functions
+export default app;
 
-    const openaiKey = Deno.env.get("OPENAI_API_KEY");
-    if (!openaiKey) {
-      return c.json({ error: "OpenAI API key not configured" }, 500);
-    }
+// Start local server only when executed directly (e.g. npm run dev)
+if (require.main === module) {
+  const port = Number.parseInt(process.env.PORT ?? '3001', 10);
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { createServer } = require('node:http');
 
-    const systemPrompt = `You are a startup advisor. Given a startup idea, suggest 3 improved versions or alternate domains that could make it more viable. Be creative and innovative.
-
-Format your response as a valid JSON object:
-{
-  "refinements": [
+  serve(
     {
-      "title": "string",
-      "description": "string",
-      "reasoning": "string"
+      fetch: app.fetch,
+      port,
+      createServer,
+    },
+    (info: { address: string; port: number }) => {
+      console.log(`Server running on http://localhost:${info.port}`);
     }
-  ]
-}`;
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${openaiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Original Idea - Title: ${title}\n\nDescription: ${description}` }
-        ],
-        temperature: 0.8,
-        response_format: { type: "json_object" }
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log(`OpenAI API error during refinement: ${response.status} - ${errorText}`);
-      return c.json({ error: "Failed to generate refinements", details: errorText }, response.status);
-    }
-
-    const data = await response.json();
-    const result = JSON.parse(data.choices[0].message.content);
-
-    return c.json(result);
-
-  } catch (error) {
-    console.log(`Server error during refinement generation: ${error}`);
-    return c.json({ error: "Internal server error during refinement", details: error.message }, 500);
-  }
-});
-
-// Competitor analysis endpoint
-app.post("/make-server-a61508a1/competitors", async (c) => {
-  try {
-    const { title, description } = await c.req.json();
-
-    const openaiKey = Deno.env.get("OPENAI_API_KEY");
-    if (!openaiKey) {
-      return c.json({ error: "OpenAI API key not configured" }, 500);
-    }
-
-    const systemPrompt = `You are a market research analyst. Identify the top 3 startups or companies solving similar problems. Provide realistic examples based on your knowledge.
-
-Format your response as a valid JSON object:
-{
-  "competitors": [
-    {
-      "name": "string",
-      "description": "string",
-      "keyFeatures": ["string"],
-      "differentiator": "string"
-    }
-  ]
-}`;
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${openaiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Idea - Title: ${title}\n\nDescription: ${description}` }
-        ],
-        temperature: 0.7,
-        response_format: { type: "json_object" }
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log(`OpenAI API error during competitor analysis: ${response.status} - ${errorText}`);
-      return c.json({ error: "Failed to analyze competitors", details: errorText }, response.status);
-    }
-
-    const data = await response.json();
-    const result = JSON.parse(data.choices[0].message.content);
-
-    return c.json(result);
-
-  } catch (error) {
-    console.log(`Server error during competitor analysis: ${error}`);
-    return c.json({ error: "Internal server error during competitor analysis", details: error.message }, 500);
-  }
-});
-
-// Market strategy endpoint
-app.post("/make-server-a61508a1/market-strategy", async (c) => {
-  try {
-    const { title, description } = await c.req.json();
-
-    const openaiKey = Deno.env.get("OPENAI_API_KEY");
-    if (!openaiKey) {
-      return c.json({ error: "OpenAI API key not configured" }, 500);
-    }
-
-    const systemPrompt = `You are a go-to-market strategist. Create a comprehensive market strategy for the given startup idea.
-
-Format your response as a valid JSON object:
-{
-  "targetAudience": {
-    "primary": "string",
-    "secondary": "string",
-    "demographics": ["string"]
-  },
-  "goToMarketStrategy": {
-    "phase1": "string",
-    "phase2": "string",
-    "phase3": "string"
-  },
-  "revenueModel": {
-    "primary": "string",
-    "secondary": "string",
-    "pricing": "string"
-  },
-  "marketingChannels": ["string"]
-}`;
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${openaiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Idea - Title: ${title}\n\nDescription: ${description}` }
-        ],
-        temperature: 0.7,
-        response_format: { type: "json_object" }
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log(`OpenAI API error during market strategy generation: ${response.status} - ${errorText}`);
-      return c.json({ error: "Failed to generate market strategy", details: errorText }, response.status);
-    }
-
-    const data = await response.json();
-    const result = JSON.parse(data.choices[0].message.content);
-
-    return c.json(result);
-
-  } catch (error) {
-    console.log(`Server error during market strategy generation: ${error}`);
-    return c.json({ error: "Internal server error during market strategy", details: error.message }, 500);
-  }
-});
-
-// Get saved idea by ID
-app.get("/make-server-a61508a1/idea/:id", async (c) => {
-  try {
-    const ideaId = c.req.param('id');
-    const idea = await kv.get(ideaId);
-
-    if (!idea) {
-      return c.json({ error: "Idea not found" }, 404);
-    }
-
-    return c.json(idea);
-
-  } catch (error) {
-    console.log(`Server error retrieving idea: ${error}`);
-    return c.json({ error: "Internal server error retrieving idea", details: error.message }, 500);
-  }
-});
-
-// Get all ideas (for leaderboard)
-app.get("/make-server-a61508a1/ideas", async (c) => {
-  try {
-    const ideas = await kv.getByPrefix("idea_");
-    
-    // Helper to normalize scores to 0-10 scale
-    const normalizeScore = (score: number) => score > 10 ? score / 10 : score;
-    
-    // Sort by average score
-    const sortedIdeas = ideas
-      .map(idea => {
-        if (idea.evaluation?.scores) {
-          const innovation = normalizeScore(idea.evaluation.scores.innovation);
-          const feasibility = normalizeScore(idea.evaluation.scores.feasibility);
-          const scalability = normalizeScore(idea.evaluation.scores.scalability);
-          const avgScore = (innovation + feasibility + scalability) / 3;
-          return { ...idea, avgScore };
-        }
-        return { ...idea, avgScore: 0 };
-      })
-      .sort((a, b) => b.avgScore - a.avgScore)
-      .slice(0, 10); // Top 10
-
-    return c.json({ ideas: sortedIdeas });
-
-  } catch (error) {
-    console.log(`Server error retrieving ideas: ${error}`);
-    return c.json({ error: "Internal server error retrieving ideas", details: error.message }, 500);
-  }
-});
-
-Deno.serve(app.fetch);
+  );
+}
